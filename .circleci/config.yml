@@ -1,5 +1,107 @@
 ---
 
+version: 2.1
+workflows:
+  # Code and Features Quality Assurance ({feature}, dev)
+  lint-and-test:
+    jobs:
+      - lint:
+          filters:
+            branches:
+              ignore:
+                - main
+                - dev
+      - test:
+          filters:
+            branches:
+              ignore:
+                - main
+  # Install package and test install ({feature}, dev, main)
+  install:
+    jobs:
+      - install:
+          filters:
+            branches:
+              ignore:
+                - main
+                - dev
+  # Upload package (dev)
+  upload-dev:
+    jobs:
+      - upload:
+          context:
+            - lifespline-praxis-template-praxis-testpypi-api-token
+          filters:
+            branches:
+              only:
+                - dev
+      - install:
+          requires:
+            - upload
+          context:
+            - lifespline-praxis-template-praxis-testpypi-api-token
+          filters:
+            branches:
+              only:
+                - dev
+  # Upload package (main)
+  upload-prd:
+    jobs:
+      - upload:
+          context:
+            - lifespline-praxis-template-praxis-pypi-api-token
+          filters:
+            branches:
+              only:
+                - main
+      - install:
+          requires:
+            - upload
+          context:
+            - lifespline-praxis-template-praxis-pypi-api-token
+          filters:
+            branches:
+              only:
+                - main
+
+jobs:
+  lint:
+    description: Lint package project files
+    docker:
+      - image: lifespline/praxis:exercise-template-python-executor
+    steps:
+      - checkout
+      - lint_circleci
+      - lint_python
+  test:
+    description: Test package project files
+    docker:
+      - image: lifespline/praxis:exercise-template-python-executor
+    steps:
+      - checkout
+      - test_package
+  upload:
+    description: build and upload package, either to pypi or to testpypi
+    docker:
+      - image: lifespline/praxis:exercise-template-python-executor
+    steps:
+      - build_and_upload_package
+      - test_package_import
+  install:
+    description: |
+      Install and test the package import. Install from:
+      - local source code ({feature})
+      - tst environment (dev)
+      - prd environment (main)
+    docker:
+      - image: lifespline/praxis:exercise-template-python-executor
+    steps:
+      - checkout
+      - install_package
+      - test_package_import
+      - uninstall_package
+
+
 commands:
   lint_circleci:
     description: Lint the circleci config file.
@@ -13,7 +115,22 @@ commands:
       - run:
           name: lint project python files
           command: pylama setup.py
-  build_and_push_package:
+  test_package:
+    description: |
+      Run python package unit tests. Assumes the package is installed.
+    steps:
+      - run:
+          name: pytest
+          command: pytest
+  test_package_import:
+    description: Test python package import
+    steps:
+      - run:
+          name: test python package import
+          command: |
+            echo "Verify import of `lifespline-praxis-template-python` modules"
+            python -m lifespline_praxis_template_python.example
+  build_and_upload_package:
     description: |
       Build and push python package either to TestPyPi or to PyPi. The
       repository is decided according to the current branch. The `main` branch
@@ -44,106 +161,41 @@ commands:
             echo "username = __token__" >> .pypirc
             echo "password = $PASSWD" >> .pypirc
 
-            echo "[3 of 3] Authenticate with https://$REPO"
+            echo "[3 of 3] Authenticate with https://$REPO and upload"
             python -m twine upload \
               --config-file .pypirc \
               -r $REPO \
               dist/*
-  pull_and_test_package:
+  install_package:
     description: |
-      Pull and test python package either from TestPyPi or from PyPi. The
-      repository is decided according to the current branch. The `main` branch
-      pulls from PyPi, the `dev` branch pulls from Test PyPi. Otherwise, no
-      operation is performed.
+      Install the package from:
+      - local source code ({feature})
+      - tst environment (dev)
+      - prd environment (main)
     steps:
       - run:
           name: pull python package
           command: |
-            # Pulling policy
+            # installation policy
             if [ $CIRCLE_BRANCH == 'main' ] ; then
               REPO=pypi.org
             elif [ $CIRCLE_BRANCH == 'dev' ] ; then
               REPO=test.pypi.org
             else
-              # skip repo pull
+              echo "Install package from local source code"
+              pip install -e .
               exit 0
             fi
 
-            echo "[1 of 2] Pull `lifespline-praxis-template-python` from https://$REPO/simple/"
-            pip install -i https://$REPO/simple/ lifespline-utils
-
-            echo "[2 of 2] Verify import of `lifespline-praxis-template-python` modules"
-            python -m lifespline_praxis_template_python.example
-jobs:
-  lint:
-    description: Lint package project files
-    docker:
-      - image: lifespline/praxis:exercise-template-python-executor
+            echo "Install package `lifespline-praxis-template-python` \
+              from https://$REPO/simple/"
+            pip install -i https://$REPO/simple/ \
+              lifespline-praxis-template-python
+  uninstall_package:
+    description: Uninstall package.
     steps:
-      - checkout
-      - lint_circleci
-      - lint_python
-  push:
-    description: build and push package, either to pypi or to testpypi
-    docker:
-      - image: lifespline/praxis:exercise-template-python-executor
-    steps:
-      - checkout
-      - build_and_push_package
-  pull:
-    description: Pull and test package, either from pypi or from testpypi
-    docker:
-      - image: lifespline/praxis:exercise-template-python-executor
-    steps:
-      - checkout
-      - pull_and_test_package
-
-version: 2.1
-workflows:
-  # Code Quality Assurance (don't run over dev and main branches)
-  # TODO ignore both dev and main
-  lint:
-    jobs:
-      - lint:
-          filters:
-            branches:
-              ignore:
-                - dev
-  # CICD for branch `dev`. Branch policy at job-level.
-  build-and-push-dev:
-    jobs:
-      - push:
-          context:
-            - lifespline-praxis-template-praxis-testpypi-api-token
-          filters:
-            branches:
-              only:
-                - dev
-      - pull:
-          requires:
-            - push
-          context:
-            - lifespline-praxis-template-praxis-testpypi-api-token
-          filters:
-            branches:
-              only:
-                - dev
-  # CICD for branch `main`. Branch policy at job-level.
-  build-and-push-prd:
-    jobs:
-      - push:
-          context:
-            - lifespline-praxis-template-praxis-pypi-api-token
-          filters:
-            branches:
-              only:
-                - main
-      - pull:
-          requires:
-            - push
-          context:
-            - lifespline-praxis-template-praxis-pypi-api-token
-          filters:
-            branches:
-              only:
-                - main
+      - run:
+          name: uninstall package
+          command: |
+            echo "Uninstall package"
+            pip uninstall lifespline-praxis-template-python
